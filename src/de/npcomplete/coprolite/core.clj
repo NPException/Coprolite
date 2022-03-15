@@ -27,6 +27,21 @@
     (assoc-in entity [:attributes attr-id] attribute)))
 
 
+(defprotocol Storage
+  (get-entity [storage e-id] )
+  (write-entity [storage entity])
+  (drop-entity [storage entity]))
+
+(defrecord InMemoryStorage []
+  Storage
+  (get-entity [storage e-id]
+    (e-id storage))
+  (write-entity [storage entity]
+    (assoc storage (:id entity) entity))
+  (drop-entity [storage entity]
+    (dissoc storage (:id entity))))
+
+
 (defn -main
   [& _args]
   (println "Hello, World!"))
