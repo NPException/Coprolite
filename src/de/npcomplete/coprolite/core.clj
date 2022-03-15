@@ -22,7 +22,8 @@
   {:pre [(contains? #{:db/single :db/multiple} cardinality)]}
   (with-meta (Attribute. name value -1 -1) {:type type :cardinality cardinality}))
 
-(defn add-attribute [entity attribute]
+(defn add-attribute
+  [entity attribute]
   (let [attr-id (keyword (:name attribute))]
     (assoc-in entity [:attributes attr-id] attribute)))
 
@@ -40,6 +41,28 @@
     (assoc storage (:id entity) entity))
   (drop-entity [storage entity]
     (dissoc storage (:id entity))))
+
+
+(defn make-index
+  [from-eav to-eav usage-pred]
+  (with-meta {} {:from-eav from-eav :to-eav to-eav :usage-pred usage-pred}))
+
+(defn from-eav
+  [index]
+  (:from-eav (meta index)))
+
+(defn to-eav
+  [index]
+  (:to-eav (meta index)))
+
+(defn usage-pred
+  [index]
+  (:usage-pred (meta index)))
+
+(defn indexes
+  "Returns which indexes are available on every database `Layer`."
+  []
+  [:VAET :AVET :VEAT :EAVT])
 
 
 (defn -main
