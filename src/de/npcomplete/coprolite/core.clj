@@ -82,23 +82,23 @@
 
 
 (defn entity-at
-  (^Entity [db ent-id]
-   (entity-at db ent-id (:curr-time db)))
+  (^Entity [db entity-id]
+   (entity-at db entity-id (:curr-time db)))
   ;; NOTE: param order changed from tutorial
   (^Entity [db ent-id ts]
    (-> db :layers (>- ts) :storage (get-entity ent-id))))
 
 (defn attribute-at
-  (^Attribute [db ent-id attrib-name]
-   (attribute-at db ent-id attrib-name (:curr-time db)))
-  (^Attribute [db ent-id attrib-name ts]
-   ((:attributes (entity-at db ent-id ts) {}) attrib-name)))
+  (^Attribute [db entity-id attrib-name]
+   (attribute-at db entity-id attrib-name (:curr-time db)))
+  (^Attribute [db entity-id attrib-name ts]
+   ((:attributes (entity-at db entity-id ts) {}) attrib-name)))
 
 (defn value-of-at
-  ([db ent-id attrib-name]
-   (value-of-at db ent-id attrib-name (:curr-time db)))
-  ([db ent-id attrib-name ts]
-   (:value (attribute-at db ent-id attrib-name ts))))
+  ([db entity-id attrib-name]
+   (value-of-at db entity-id attrib-name (:curr-time db)))
+  ([db entity-id attrib-name ts]
+   (:value (attribute-at db entity-id attrib-name ts))))
 
 (defn index-at
   ([db kind]
@@ -109,19 +109,19 @@
 
 (defn evolution-of
   "Returns all changes for an attribute over time, from most to least recent. Eager."
-  [db ent-id attrib-name]
+  [db entity-id attrib-name]
   (loop [res [], ts (:curr-time db)]
     (if (= -1 ts)
       res                                                   ;; tutorial returned `(reverse res)` instead
-      (let [attr (attribute-at db ent-id attrib-name ts)]
+      (let [attr (attribute-at db entity-id attrib-name ts)]
         (recur (conj res [(:ts attr) (:value attr)]), (:prev-ts attr))))))
 
 (defn lazy-evolution-of
   "Returns an iteration (sequable/reducible) of the change history of an attribute, from most to least recent."
-  [db ent-id attrib-name]
+  [db entity-id attrib-name]
   ;; TODO: check if this works as expected
   (iteration
-    (fn [ts] (attribute-at db ent-id attrib-name ts))
+    (fn [ts] (attribute-at db entity-id attrib-name ts))
     :initk (:curr-time db)
     :kf (fn [attrib] (let [^long ts (:prev-ts attrib)]
                        (if (= ts -1) nil ts)))

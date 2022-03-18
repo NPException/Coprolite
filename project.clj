@@ -3,6 +3,7 @@
                  [criterium "0.4.6"]]
   :main ^:skip-aot de.npcomplete.coprolite.core
   :target-path "target/%s"
-  :global-vars {*warn-on-reflection* true}
+  :global-vars {*warn-on-reflection* true
+                *unchecked-math* :warn-on-boxed}
   :profiles {:uberjar {:aot :all
                        :jvm-opts ["-Dclojure.compiler.direct-linking=true"]}})
