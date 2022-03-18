@@ -160,10 +160,10 @@
   [index [k1 k2 update-value :as _path] operation]
   (update-in index [k1 k2] #(conj (or % #{}) update-value)))
 
-;; NOTE: this function was ommited in the tutorial. the implementation is taken from https://gist.github.com/Saityi/711af86e1934b0a32d3b5ad94d34dc82#file-circledb-rkt-L197-L200
+;; This function was ommited in the book. The implementation is taken from https://github.com/aosabook/500lines/blob/master/functionalDB/code/fdb/constructs.clj#L59
 (defn ^:private collify
-  [val]
-  (if (list? val) val (list val)))
+  [x]
+  (if (coll? x) x [x]))
 
 (defn ^:private update-attribute-in-index
   [index ent-id attr-name target-val operation]
