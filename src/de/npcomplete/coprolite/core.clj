@@ -16,9 +16,11 @@
 (defrecord Attribute [name value ts prev-ts])
 
 (defn make-attribute
+  "The type of the attribute may be either :string, :number, :boolean or :db/ref . If the type is :db/ref, the value is an id of another entity."
   [name value type
    & {:keys [cardinality] :or {cardinality :db/single}}]
-  {:pre [(contains? #{:db/single :db/multiple} cardinality)]}
+  {:pre [(contains? #{:string :number :boolean :db/ref} type)
+         (contains? #{:db/single :db/multiple} cardinality)]}
   (with-meta (Attribute. name value -1 -1)
     {:type type :cardinality cardinality}))
 
@@ -60,7 +62,7 @@
   (:usage-pred (meta index)))
 
 (def indexes
-  "The indexes available on every database `Layer`."
+  "The indexes available on every database layer."
   [:VAET :AVET :VEAT :EAVT])
 
 
