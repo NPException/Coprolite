@@ -59,9 +59,8 @@
   [index]
   (:usage-pred (meta index)))
 
-(defn indexes
-  "Returns which indexes are available on every database `Layer`."
-  []
+(def indexes
+  "The indexes available on every database `Layer`."
   [:VAET :AVET :VEAT :EAVT])
 
 
@@ -80,6 +79,8 @@
               (make-index #(vector %1 %2 %3) #(vector %1 %2 %3) any?))] ;EAVT
            0 0))))
 
+
+;; Basic accessor functions ;;
 
 (defn entity-at
   (^Entity [db entity-id]
@@ -126,6 +127,81 @@
     :kf (fn [attrib] (let [^long ts (:prev-ts attrib)]
                        (if (= ts -1) nil ts)))
     :vf (fn [attrib] [(:ts attrib) (:value attrib)])))
+
+
+;; Data behaviour and lifecycle ;;
+
+(defn ^:private next-ts
+  [db]
+  (inc ^long (:curr-time db)))
+
+(defn ^:private update-creation-ts
+  [entity new-ts]
+  (reduce
+    #(assoc-in %1 [:attributes %2 :ts] new-ts)
+    entity
+    (keys (:attributes entity))))
+
+;; NOTE: heavily modified from tutorial. restore to original if something's off.
+(defn ^:private fix-new-entity
+  [db entity]
+  (let [new-entity?  (= :db/no-id-yet (:id entity))
+        ^long top-id (:top-id db)
+        increased-id (inc top-id)
+        entity'      (if new-entity? (assoc entity :id (keyword (str increased-id))) entity)
+        next-top-id  (if new-entity? increased-id top-id)]
+    [(update-creation-ts entity' (next-ts db)) next-top-id]))
+
+
+;; NOTE: heavily modified from tutorial. restore to original if something's off.
+(defn ^:private update-entry-in-index
+  [index [k1 k2 update-value :as _path] operation]
+  (update-in index [k1 k2] #(conj (or % #{}) update-value)))
+
+;; NOTE: this function was ommited in the tutorial. the implementation is taken from https://gist.github.com/Saityi/711af86e1934b0a32d3b5ad94d34dc82#file-circledb-rkt-L197-L200
+(defn ^:private collify
+  [val]
+  (if (list? val) val (list val)))
+
+(defn ^:private update-attribute-in-index
+  [index ent-id attr-name target-val operation]
+  (let [colled-target-val (collify target-val)
+        from-eav-fn       (from-eav index)
+        update-entry-fn   (fn [index vl]
+                            (update-entry-in-index
+                              index
+                              (from-eav-fn ent-id attr-name vl)
+                              operation))]
+    (reduce update-entry-fn index colled-target-val)))
+
+(defn ^:private add-entity-to-index
+  [entity layer index-name]
+  (let [entity-id           (:id entity)
+        index               (index-name layer)
+        all-attributes      (vals (:attributes entity))
+        relevant?           (usage-pred index)
+        relevant-attributes (filterv relevant? all-attributes)
+        add-in-index-fn     (fn [ind attr]
+                              (update-attribute-in-index ind entity-id (:name attr)
+                                (:value attr)
+                                :db/add))]
+    (assoc layer index-name (reduce add-in-index-fn index relevant-attributes))))
+
+
+(defn add-entity
+  [db entity]
+  (let [[fixed-entity next-top-id] (fix-new-entity db entity)
+        layer-with-updated-storage (update (peek (:layers db)) :storage write-entity fixed-entity)
+        new-layer                  (reduce
+                                     #(add-entity-to-index fixed-entity %1 %2)
+                                     layer-with-updated-storage
+                                     indexes)]
+    (-> (assoc db :layers (conj (:layers db) new-layer))
+        (assoc :top-id next-top-id))))
+
+(defn add-entities
+  [db entities]
+  (reduce add-entity db entities))
 
 
 (defn -main
