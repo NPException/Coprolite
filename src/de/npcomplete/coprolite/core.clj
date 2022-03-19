@@ -181,8 +181,7 @@
   (let [entity-id           (:id entity)
         index               (index-name layer)
         all-attributes      (vals (:attributes entity))
-        relevant?           (usage-pred index)
-        relevant-attributes (filterv relevant? all-attributes)
+        relevant-attributes (filterv (usage-pred index) all-attributes)
         add-in-index-fn     (fn [ind attr]
                               (update-attribute-in-index ind entity-id (:name attr)
                                 (:value attr)
@@ -198,12 +197,78 @@
                                      #(add-entity-to-index fixed-entity %1 %2)
                                      layer-with-updated-storage
                                      indexes)]
-    (-> (assoc db :layers (conj (:layers db) new-layer))
+    (-> (update db :layers conj new-layer)
         (assoc :top-id next-top-id))))
 
 (defn add-entities
   [db entities]
   (reduce add-entity db entities))
+
+
+;; TODO
+(defn update-entity
+  [db ent-id attibute-name value operation])
+
+
+(defn ^:private reffing-to
+  [ent-id layer]
+  (let [vaet (:VAET layer)]
+    (for [[attribute-name reffing-set] (ent-id vaet)
+          reffing reffing-set]
+      [reffing attribute-name])))
+
+(defn ^:private remove-back-refs
+  [db ent-id layer]
+  (let [reffing-datoms (reffing-to ent-id layer)
+        remove-fn      (fn [db [e a]]
+                         (update-entity db e a ent-id :db/remove))
+        clean-db       (reduce remove-fn db reffing-datoms)]
+    (peek (:layers clean-db))))
+
+(defn ^:private remove-entry-from-index
+  [index [k1 k2 val-to-remove :as _path]]
+  (let [path-to-items   [k1 k2]
+        old-entries-set (get-in index path-to-items)]
+    (cond
+      (not (contains? old-entries-set val-to-remove)) index ; the set of items does not contain the item to remove, => nothing to do here
+      (= 1 (count old-entries-set)) (update index k1 dissoc k2) ; a path that splits at the second item - just remove the unneeded part of it
+      :else (update-in index path-to-items disj val-to-remove))))
+
+(defn ^:private remove-entries-from-index
+  [ent-id operation index attr]
+  (if (= operation :db/add)
+    index
+    (let [attr-name   (:name attr)
+          datom-vals  (collify (:value attr))
+          from-eav-fn (from-eav index)
+          paths       (mapv #(from-eav-fn ent-id attr-name %) datom-vals)]
+      (reduce remove-entry-from-index index paths))))
+
+(defn ^:private remove-entity-from-index
+  [entity layer index-name]
+  (let [ent-id               (:id entity)
+        index                (index-name layer)
+        all-attributes       (vals (:attributes entity))
+        relevant-attributes  (filterv (usage-pred index) all-attributes)
+        remove-from-index-fn #(remove-entries-from-index ent-id :db/remove %1 %2)]
+    (assoc layer index-name (reduce remove-from-index-fn index relevant-attributes))))
+
+
+(defn remove-entity
+  [db ent-id]
+  (let [entity       (entity-at db ent-id)
+        layer        (remove-back-refs db ent-id (peek (:layers db)))
+        no-ref-layer (update layer :VAET dissoc ent-id)
+        no-ent-layer (update no-ref-layer :storage drop-entity entity)
+        new-layer    (reduce
+                       #(remove-entity-from-index entity %1 %2)
+                       no-ent-layer
+                       indexes)]
+    (update db :layers conj new-layer)))
+
+(defn remove-entities
+  [db ent-ids]
+  (reduce remove-entity db ent-ids))
 
 
 (defn -main
