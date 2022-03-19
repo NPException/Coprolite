@@ -181,7 +181,7 @@
   (let [entity-id           (:id entity)
         index               (index-name layer)
         all-attributes      (vals (:attributes entity))
-        relevant-attributes (filterv (usage-pred index) all-attributes)
+        relevant-attributes (eduction (filter (usage-pred index)) all-attributes)
         add-in-index-fn     (fn [ind attr]
                               (update-attribute-in-index ind entity-id (:name attr)
                                 (:value attr)
@@ -227,12 +227,11 @@
 
 (defn ^:private remove-entry-from-index
   [index [k1 k2 val-to-remove :as _path]]
-  (let [path-to-items   [k1 k2]
-        old-entries-set (get-in index path-to-items)]
+  (let [old-entries-set ((index k1 {}) k2)]
     (cond
       (not (contains? old-entries-set val-to-remove)) index ; the set of items does not contain the item to remove, => nothing to do here
       (= 1 (count old-entries-set)) (update index k1 dissoc k2) ; a path that splits at the second item - just remove the unneeded part of it
-      :else (update-in index path-to-items disj val-to-remove))))
+      :else (update-in index [k1 k2] disj val-to-remove))))
 
 (defn ^:private remove-entries-from-index
   [ent-id operation index attr]
@@ -241,7 +240,7 @@
     (let [attr-name   (:name attr)
           datom-vals  (collify (:value attr))
           from-eav-fn (from-eav index)
-          paths       (mapv #(from-eav-fn ent-id attr-name %) datom-vals)]
+          paths       (eduction (map #(from-eav-fn ent-id attr-name %)) datom-vals)]
       (reduce remove-entry-from-index index paths))))
 
 (defn ^:private remove-entity-from-index
@@ -249,7 +248,7 @@
   (let [ent-id               (:id entity)
         index                (index-name layer)
         all-attributes       (vals (:attributes entity))
-        relevant-attributes  (filterv (usage-pred index) all-attributes)
+        relevant-attributes  (eduction (filter (usage-pred index)) all-attributes)
         remove-from-index-fn #(remove-entries-from-index ent-id :db/remove %1 %2)]
     (assoc layer index-name (reduce remove-from-index-fn index relevant-attributes))))
 
