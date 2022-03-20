@@ -1,5 +1,6 @@
 (ns de.npcomplete.coprolite.core
-  (:require [de.npcomplete.coprolite.util :refer [>-]])
+  (:require [clojure.set :as set]
+            [de.npcomplete.coprolite.util :refer [>-]])
   (:gen-class))
 
 (defrecord Database [layers top-id curr-time])
@@ -10,7 +11,9 @@
 
 (defn make-entity
   ([] (make-entity :db/no-id-yet))
-  ([id] (Entity. id {})))
+  ([id]
+   {:pre [(keyword? id)]}
+   (Entity. id {})))
 
 
 (defrecord Attribute [name value ts prev-ts])
@@ -19,14 +22,17 @@
   "The type of the attribute may be either :string, :number, :boolean or :db/ref . If the type is :db/ref, the value is an id of another entity."
   [name value type
    & {:keys [cardinality] :or {cardinality :db/single}}]
-  {:pre [(contains? #{:string :number :boolean :db/ref} type)
+  ;; TODO: check if type matches value, and accept the value as a set that contains the type even if it's of single cardinality
+  {:pre [(keyword? name)
+         (contains? #{:string :number :boolean :db/ref} type)
          (contains? #{:db/single :db/multiple} cardinality)]}
+  ;; TODO: wrap single cardinality values in a set (if they aren't already)
   (with-meta (Attribute. name value -1 -1)
     {:type type :cardinality cardinality}))
 
 (defn add-attribute
   [entity attribute]
-  (let [attr-id (keyword (:name attribute))]
+  (let [attr-id (:name attribute)]
     (assoc-in entity [:attributes attr-id] attribute)))
 
 
@@ -66,9 +72,13 @@
   [:VAET :AVET :VEAT :EAVT])
 
 
+(defn single?
+  [attribute]
+  (= :db/single (:cardinality (meta attribute))))
+
 (defn ref?
-  [attr]
-  (= :db/ref (:type (meta attr))))
+  [attribute]
+  (= :db/ref (:type (meta attribute))))
 
 (defn make-db
   ([] (make-db (InMemoryStorage.)))
@@ -119,10 +129,9 @@
       (let [attr (attribute-at db entity-id attrib-name ts)]
         (recur (conj res [(:ts attr) (:value attr)]), (:prev-ts attr))))))
 
-(defn lazy-evolution-of
+(defn evolution-trace
   "Returns an iteration (sequable/reducible) of the change history of an attribute, from most to least recent."
   [db entity-id attrib-name]
-  ;; TODO: check if this works as expected
   (iteration
     (fn [ts] (attribute-at db entity-id attrib-name ts))
     :initk (:curr-time db)
@@ -132,6 +141,9 @@
 
 
 ;; Data behaviour and lifecycle ;;
+
+;; TODO: Try to make entity and attribute retrieval dependent only on the top layer, not :curr-time too. (e.g. the call to `attribute-at` in `update-entity`)
+;;       Might be best if :curr-time isn't a field, but instead a function which just returns (dec (count layers))
 
 (defn ^:private next-ts
   [db]
@@ -157,7 +169,7 @@
 
 ;; NOTE: heavily modified from tutorial. restore to original if something's off.
 (defn ^:private update-entry-in-index
-  [index [k1 k2 update-value :as _path] operation]
+  [index [k1 k2 update-value :as _path] _operation]         ;; TODO: remove unused `operation` parameter (or use it for logging?)
   (update-in index [k1 k2] #(conj (or % #{}) update-value)))
 
 ;; This function was ommited in the book. The implementation is taken from https://github.com/aosabook/500lines/blob/master/functionalDB/code/fdb/constructs.clj#L59
@@ -205,9 +217,94 @@
   (reduce add-entity db entities))
 
 
-;; TODO
+(defn ^:private update-attribute-modification-time
+  [attribute new-ts]
+  (-> (assoc attribute :ts new-ts)
+      (assoc :prev-ts (:ts attribute))))
+
+(defn ^:private update-attribute-value
+  [attribute value operation]
+  ;; TODO: Might make sense to just "set-ify" value here.
+  ;;       That way I don't need to pay attention if I'm modifying a :db/single or :db/multiple attribute.
+  (cond
+    (single? attribute)
+    (assoc attribute :value #{value})
+    ; now we're talking about an attribute of multiple values
+    (= :db/reset-to operation)
+    (assoc attribute :value value)
+    (= :db/add operation)
+    (assoc attribute :value (set/union (:value attribute) value))
+    (= :db/remove operation)
+    (assoc attribute :value (set/difference (:value attribute) value))))
+
+(defn ^:private update-attribute
+  [attribute new-val new-ts operation]
+  {:pre [(if (single? attribute)
+           (contains? #{:db/reset-to :db/remove} operation)
+           (contains? #{:db/reset-to :db/add :db/remove} operation))]}
+  (-> attribute
+      (update-attribute-modification-time new-ts)
+      (update-attribute-value new-val operation)))
+
+(defn ^:private remove-entry-from-index
+  [index [k1 k2 val-to-remove :as _path]]
+  (let [old-entries-set ((index k1 {}) k2)]
+    (cond
+      ; the set of items does not contain the item to remove, => nothing to do here
+      (not (contains? old-entries-set val-to-remove))
+      index
+      ; a path that splits at the second item - just remove the unneeded part of it
+      (= 1 (count old-entries-set))
+      (let [updated-k1-map (dissoc (index k1) k2)]
+        (if (empty? updated-k1-map)
+          (dissoc index k1)
+          (assoc index k1 updated-k1-map)))
+      :else
+      (update-in index [k1 k2] disj val-to-remove))))
+
+(defn ^:private remove-entries-from-index
+  [ent-id operation index attr]
+  (if (= operation :db/add)
+    index
+    (let [attr-name   (:name attr)
+          datom-vals  (collify (:value attr))
+          from-eav-fn (from-eav index)
+          paths       (eduction (map #(from-eav-fn ent-id attr-name %)) datom-vals)]
+      (reduce remove-entry-from-index index paths))))
+
+(defn ^:private update-index
+  [ent-id old-attribute target-val operation layer index-name]
+  (if-not ((usage-pred (index-name layer)) old-attribute)
+    layer
+    (let [index         (index-name layer)
+          cleaned-index (remove-entries-from-index ent-id operation index old-attribute)
+          updated-index (if (= operation :db/remove)
+                          cleaned-index
+                          (update-attribute-in-index cleaned-index ent-id (:name old-attribute) target-val operation))]
+      (assoc layer index-name updated-index))))
+
+(defn ^:private update-layer
+  [layer ent-id old-attribute updated-attribute new-val operation]
+  (let [storage        (:storage layer)
+        new-layer      (reduce
+                         #(update-index ent-id old-attribute new-val operation %1 %2)
+                         layer
+                         indexes)
+        updated-entity (assoc-in (get-entity storage ent-id)
+                         [:attributes (:name updated-attribute)]
+                         updated-attribute)]
+    (assoc new-layer :storage (write-entity storage updated-entity))))
+
 (defn update-entity
-  [db ent-id attibute-name value operation])
+  ([db ent-id attribute-name new-val]
+   (update-entity db ent-id attribute-name new-val :db/reset-to))
+  ([db ent-id attribute-name new-val operation]
+   (let [update-ts           (next-ts db)
+         layer               (peek (:layers db))
+         attribute           (attribute-at db ent-id attribute-name)
+         updated-attribute   (update-attribute attribute new-val update-ts operation)
+         fully-updated-layer (update-layer layer ent-id attribute updated-attribute new-val operation)]
+     (update db :layers conj fully-updated-layer))))
 
 
 (defn ^:private reffing-to
@@ -224,24 +321,6 @@
                          (update-entity db e a ent-id :db/remove))
         clean-db       (reduce remove-fn db reffing-datoms)]
     (peek (:layers clean-db))))
-
-(defn ^:private remove-entry-from-index
-  [index [k1 k2 val-to-remove :as _path]]
-  (let [old-entries-set ((index k1 {}) k2)]
-    (cond
-      (not (contains? old-entries-set val-to-remove)) index ; the set of items does not contain the item to remove, => nothing to do here
-      (= 1 (count old-entries-set)) (update index k1 dissoc k2) ; a path that splits at the second item - just remove the unneeded part of it
-      :else (update-in index [k1 k2] disj val-to-remove))))
-
-(defn ^:private remove-entries-from-index
-  [ent-id operation index attr]
-  (if (= operation :db/add)
-    index
-    (let [attr-name   (:name attr)
-          datom-vals  (collify (:value attr))
-          from-eav-fn (from-eav index)
-          paths       (eduction (map #(from-eav-fn ent-id attr-name %)) datom-vals)]
-      (reduce remove-entry-from-index index paths))))
 
 (defn ^:private remove-entity-from-index
   [entity layer index-name]
