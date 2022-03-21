@@ -142,9 +142,6 @@
 
 ;; Data behaviour and lifecycle ;;
 
-;; TODO: Try to make entity and attribute retrieval dependent only on the top layer, not :curr-time too. (e.g. the call to `attribute-at` in `update-entity`)
-;;       Might be best if :curr-time isn't a field, but instead a function which just returns (dec (count layers))
-
 (defn ^:private next-ts
   [db]
   (inc ^long (:curr-time db)))
@@ -301,7 +298,8 @@
   ([db ent-id attribute-name new-val operation]
    (let [update-ts           (next-ts db)
          layer               (peek (:layers db))
-         attribute           (attribute-at db ent-id attribute-name)
+         entity              (-> layer :storage (get-entity ent-id))
+         attribute           ((:attributes entity) attribute-name)
          updated-attribute   (update-attribute attribute new-val update-ts operation)
          fully-updated-layer (update-layer layer ent-id attribute updated-attribute new-val operation)]
      (update db :layers conj fully-updated-layer))))
@@ -347,6 +345,35 @@
 (defn remove-entities
   [db ent-ids]
   (reduce remove-entity db ent-ids))
+
+
+(defn transact-on-db
+  [initial-db ops]
+  (loop [[op & rst-ops] ops transacted initial-db]
+    (if op
+      ;; TODO: check if each op could just be a function of db->new-db instead. Then this would become (recur rst-ops (op transacted))
+      (recur rst-ops (apply (first op) transacted (rest op)))
+      (-> initial-db
+          (update :layers conj (peek (:layers transacted)))
+          (assoc :curr-time (next-ts initial-db))
+          (assoc :top-id (:top-id transacted))))))
+
+(defmacro _transact
+  [db op & txs]
+  (when txs
+    (loop [[frst-tx# & rst-tx#] txs
+           accum-txs# []]
+      (if frst-tx#
+        (recur rst-tx# (conj accum-txs# (vec frst-tx#)))
+        (list op db `transact-on-db accum-txs#)))))
+
+(defmacro transact
+  [db-conn & txs]
+  `(_transact ~db-conn swap! ~@txs))
+
+(defmacro what-if
+  [db & ops]
+  `(_transact ~db (fn [db# f# txs#] (f# db# txs#)) ~@ops))
 
 
 (defn -main
