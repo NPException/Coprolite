@@ -121,13 +121,13 @@
 
 
 (defn evolution-of
-  "Returns all changes for an attribute over time, from most to least recent. Eager."
+  "Returns all changes for an attribute over time, from least to most recent. Eager."
   [db entity-id attrib-name]
-  (loop [res [], ts (:curr-time db)]
+  (loop [res (transient []), ts (:curr-time db)]
     (if (= -1 ts)
-      res                                                   ;; tutorial returned `(reverse res)` instead
+      (rseq (persistent! res))
       (let [attr (attribute-at db entity-id attrib-name ts)]
-        (recur (conj res [(:ts attr) (:value attr)]), (:prev-ts attr))))))
+        (recur (conj! res [(:ts attr) (:value attr)]), (:prev-ts attr))))))
 
 (defn evolution-trace
   "Returns an iteration (sequable/reducible) of the change history of an attribute, from most to least recent."
@@ -219,20 +219,22 @@
   (-> (assoc attribute :ts new-ts)
       (assoc :prev-ts (:ts attribute))))
 
+(defn ^:private setify
+  [x]
+  (if (set? x) x #{x}))
+
 (defn ^:private update-attribute-value
   [attribute value operation]
-  ;; TODO: Might make sense to just "set-ify" value here.
-  ;;       That way I don't need to pay attention if I'm modifying a :db/single or :db/multiple attribute.
   (cond
     (single? attribute)
-    (assoc attribute :value #{value})
+    (assoc attribute :value value)
     ; now we're talking about an attribute of multiple values
     (= :db/reset-to operation)
-    (assoc attribute :value value)
+    (assoc attribute :value (setify value))
     (= :db/add operation)
-    (assoc attribute :value (set/union (:value attribute) value))
+    (assoc attribute :value (set/union (:value attribute) (setify value)))
     (= :db/remove operation)
-    (assoc attribute :value (set/difference (:value attribute) value))))
+    (assoc attribute :value (set/difference (:value attribute) (setify value)))))
 
 (defn ^:private update-attribute
   [attribute new-val new-ts operation]
@@ -300,7 +302,7 @@
          layer               (peek (:layers db))
          entity              (-> layer :storage (get-entity ent-id))
          attribute           ((:attributes entity) attribute-name)
-         updated-attribute   (update-attribute attribute new-val update-ts operation)
+         updated-attribute   (update-attribute attribute new-val update-ts operation) ;; TODO: return `db` unchanged if attribute value didn't change
          fully-updated-layer (update-layer layer ent-id attribute updated-attribute new-val operation)]
      (update db :layers conj fully-updated-layer))))
 
@@ -332,7 +334,7 @@
 
 (defn remove-entity
   [db ent-id]
-  (let [entity       (entity-at db ent-id)
+  (let [entity       (entity-at db ent-id)                  ;; TODO: just return `db` unchanged when entity isn't found
         layer        (remove-back-refs db ent-id (peek (:layers db)))
         no-ref-layer (update layer :VAET dissoc ent-id)
         no-ent-layer (update no-ref-layer :storage drop-entity entity)
@@ -348,11 +350,11 @@
 
 
 (defn transact-on-db
-  [initial-db ops]
-  (loop [[op & rst-ops] ops transacted initial-db]
-    (if op
-      ;; TODO: check if each op could just be a function of db->new-db instead. Then this would become (recur rst-ops (op transacted))
-      (recur rst-ops (apply (first op) transacted (rest op)))
+  [initial-db tx-fns]
+  (loop [[tx-fn & remaining-tx-fns] tx-fns
+         transacted initial-db]
+    (if tx-fn
+      (recur remaining-tx-fns (tx-fn transacted))
       (-> initial-db
           (update :layers conj (peek (:layers transacted)))
           (assoc :curr-time (next-ts initial-db))
@@ -361,11 +363,11 @@
 (defmacro _transact
   [db op & txs]
   (when txs
-    (loop [[frst-tx# & rst-tx#] txs
-           accum-txs# []]
-      (if frst-tx#
-        (recur rst-tx# (conj accum-txs# (vec frst-tx#)))
-        (list op db `transact-on-db accum-txs#)))))
+    (loop [[[tx-f & tx-args :as tx] & remaining-txs] txs
+           accum-txs []]
+      (if tx
+        (recur remaining-txs (conj accum-txs `(fn [db#] (~tx-f db# ~@tx-args))))
+        (list op db `transact-on-db accum-txs)))))
 
 (defmacro transact
   [db-conn & txs]
