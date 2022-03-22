@@ -1,6 +1,6 @@
 (ns de.npcomplete.coprolite.core
   (:require [clojure.set :as set]
-            [de.npcomplete.coprolite.util :refer [>-]])
+            [de.npcomplete.coprolite.util :as u :refer [>-]])
   (:gen-class))
 
 (defrecord Database [layers top-id curr-time])
@@ -26,7 +26,6 @@
   {:pre [(keyword? name)
          (contains? #{:string :number :boolean :db/ref} type)
          (contains? #{:db/single :db/multiple} cardinality)]}
-  ;; TODO: wrap single cardinality values in a set (if they aren't already)
   (with-meta (Attribute. name value -1 -1)
     {:type type :cardinality cardinality}))
 
@@ -169,14 +168,9 @@
   [index [k1 k2 update-value :as _path] _operation]         ;; TODO: remove unused `operation` parameter (or use it for logging?)
   (update-in index [k1 k2] #(conj (or % #{}) update-value)))
 
-;; This function was ommited in the book. The implementation is taken from https://github.com/aosabook/500lines/blob/master/functionalDB/code/fdb/constructs.clj#L59
-(defn ^:private collify
-  [x]
-  (if (coll? x) x [x]))
-
 (defn ^:private update-attribute-in-index
   [index ent-id attr-name target-val operation]
-  (let [colled-target-val (collify target-val)
+  (let [colled-target-val (u/collify target-val)
         from-eav-fn       (from-eav index)
         update-entry-fn   (fn [index vl]
                             (update-entry-in-index
@@ -266,7 +260,7 @@
   (if (= operation :db/add)
     index
     (let [attr-name   (:name attr)
-          datom-vals  (collify (:value attr))
+          datom-vals  (u/collify (:value attr))
           from-eav-fn (from-eav index)
           paths       (eduction (map #(from-eav-fn ent-id attr-name %)) datom-vals)]
       (reduce remove-entry-from-index index paths))))
@@ -294,6 +288,7 @@
                          updated-attribute)]
     (assoc new-layer :storage (write-entity storage updated-entity))))
 
+;; TODO: add the possiblity to add a new attribute to an existing entity.
 (defn update-entity
   ([db ent-id attribute-name new-val]
    (update-entity db ent-id attribute-name new-val :db/reset-to))
@@ -348,6 +343,8 @@
   [db ent-ids]
   (reduce remove-entity db ent-ids))
 
+
+;; Transaction handling ;;
 
 (defn transact-on-db
   [initial-db tx-fns]
