@@ -1,5 +1,6 @@
 (ns de.npcomplete.coprolite.query
   (:require [clojure.string :as str]
+            [de.npcomplete.coprolite.core :as core]
             [de.npcomplete.coprolite.util :as u]))
 
 ;; TODO (for later): consider moving away from macros for queries, so that they can be built dynamically at runtime
@@ -58,3 +59,29 @@
 (defmacro symbol-col-to-set
   [coll]
   (set coll))
+
+
+;; query planning
+
+(defn single-index-query-plan
+  [query indx db]
+  (let [q-res (query-index (core/index-at db indx) query)]
+    (bind-variables-to-query q-res (core/index-at db indx))))
+
+(defn ^:private collapse-variable-vectors
+  [accV v]
+  (mapv #(when (= %1 %2) %1) accV v))
+
+(defn index-of-joining-variable
+  ^long [query-clauses]
+  (->> query-clauses
+       (mapv #(:db/variable (meta %)))
+       (reduce collapse-variable-vectors)
+       (keep-indexed #(when (variable? %2 false) %1))
+       first))
+
+(defn build-query-plan
+  [query]
+  (let [join-index (index-of-joining-variable query)
+        db-index   (case join-index 0 :AVET 1 :VEAT 2 :EAVT)]
+    (partial single-index-query-plan query db-index)))
