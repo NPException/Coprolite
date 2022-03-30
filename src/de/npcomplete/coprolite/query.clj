@@ -6,16 +6,15 @@
 
 ;; TODO (for later): consider moving away from macros for queries, so that they can be built dynamically at runtime
 
-;; NOTE: make sure to pass symbols
-(defn variable?
+(defn ^:private variable?
   "A predicate that accepts a string and checks whether it describes a datalog variable (either starts with ? or it is _)"
   ([x] (variable? x true))
-  ([x accept-underscore?]                                   ; intentionally implemented as function and not a macro so we'd be able to use it as a HOF
+  ([x accept-underscore?]
    (and (symbol? x)
         (or (and accept-underscore? (= x '_))
             (str/starts-with? (name x) "?")))))
 
-(defn clause-term-expr
+(defn ^:private clause-term-expr
   [clause-term]
   (cond
     (variable? clause-term)                                 ; variable
@@ -56,7 +55,6 @@
         (conj predicate-vectors `(pred-clause ~clause))))))
 
 
-;; NOTE: the tutorial converts to a set of strings
 (defmacro symbol-col-to-set
   [coll]
   (set coll))
@@ -64,7 +62,7 @@
 
 ;; query planning
 
-(defn filter-index
+(defn ^:private filter-index
   [index predicate-clauses]
   (for [[e a v :as pred-clause] predicate-clauses
         :let [[lvl1-pred lvl2-pred lvl3-pred] ((core/from-eav index) e a v)]
@@ -77,7 +75,7 @@
         :let [res (into #{} (filter lvl3-pred) l3-set)]]
     (with-meta [k1 k2 res] (meta pred-clause))))
 
-(defn items-that-answer-all-conditions
+(defn ^:private items-that-answer-all-conditions
   [items-seq ^long num-of-conditions]
   (->> items-seq                                            ; take the sets of items
        (reduce into [])                                     ; reduce all the sets into one vector
@@ -87,20 +85,18 @@
                  (when (<= num-of-conditions n)             ; items that answered all conditions
                    item))))))
 
-(defn mask-path-leaf-with-items
+(defn ^:private mask-path-leaf-with-items
   [relevant-items path]
   (update-in path [2] set/intersection relevant-items))
 
-(defn query-index
+(defn ^:private query-index
   [index pred-clauses]
   (let [result-clauses         (filter-index index pred-clauses)
         relevant-items         (items-that-answer-all-conditions (map peek result-clauses) (count pred-clauses))
         cleaned-result-clauses (map #(mask-path-leaf-with-items relevant-items %) result-clauses)]
     (filter #(seq (peek %)) cleaned-result-clauses)))
 
-;; NOTE: continue at "Table 10.7"
-
-(defn single-index-query-plan
+(defn ^:private single-index-query-plan
   [query-pred-clauses index-kw db]
   (let [db-index (core/index-at db index-kw)
         q-res (query-index db-index query-pred-clauses)]
@@ -110,7 +106,7 @@
   [accV v]
   (mapv #(when (= %1 %2) %1) accV v))
 
-(defn index-of-joining-variable
+(defn ^:private index-of-joining-variable
   ^long [query-pred-clauses]
   (->> query-pred-clauses
        (mapv #(:db/variable (meta %)))
