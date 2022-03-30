@@ -3,9 +3,9 @@
             [de.npcomplete.coprolite.util :as u :refer [>-]])
   (:gen-class))
 
-(defrecord Database [layers top-id curr-time])
+(defrecord Database [layers ^long curr-time])
 
-(defrecord Layer [storage VAET AVET VEAT EAVT])
+(defrecord Layer [storage ^long top-id VAET AVET VEAT EAVT])
 
 (defrecord Entity [id attributes])
 
@@ -16,7 +16,7 @@
    (Entity. id {})))
 
 
-(defrecord Attribute [name value ts prev-ts])
+(defrecord Attribute [name value ^long ts ^long prev-ts])
 
 (defn ^:private valid-attribute-value?
   [value]
@@ -90,38 +90,52 @@
   ([] (make-db (InMemoryStorage.)))
   ([storage]
    (atom (Database.
-           [(Layer. storage
+           [(Layer. storage 0
               (make-index #(vector %3 %2 %1) #(vector %3 %2 %1) ref?) ;VAET
               (make-index #(vector %2 %3 %1) #(vector %3 %1 %2) any?) ;AVET
               (make-index #(vector %3 %1 %2) #(vector %2 %3 %1) any?) ;VEAT
               (make-index #(vector %1 %2 %3) #(vector %1 %2 %3) any?))] ;EAVT
-           0 0))))
+           0))))
+
+(defn ^:private current-layer-ts
+  ^long [^Database db]
+  (-> db :layers count dec))
+
+(defn db-at
+  [^Database db ^long ts]
+  (-> db
+      (update :layers subvec 0 (inc ts))
+      (assoc :curr-time ts)))
+
+(defn prev-db
+  [^Database db]
+  (db-at db (dec (current-layer-ts db))))
 
 
 ;; Basic accessor functions ;;
 
 (defn entity-at
   (^Entity [db entity-id]
-   (entity-at db entity-id (:curr-time db)))
+   (entity-at db entity-id (current-layer-ts db)))
   ;; NOTE: param order changed from tutorial
   (^Entity [db ent-id ts]
    (-> db :layers (>- ts) :storage (get-entity ent-id))))
 
 (defn attribute-at
   (^Attribute [db entity-id attrib-name]
-   (attribute-at db entity-id attrib-name (:curr-time db)))
+   (attribute-at db entity-id attrib-name (current-layer-ts db)))
   (^Attribute [db entity-id attrib-name ts]
    ((:attributes (entity-at db entity-id ts) {}) attrib-name)))
 
 (defn value-of-at
   ([db entity-id attrib-name]
-   (value-of-at db entity-id attrib-name (:curr-time db)))
+   (value-of-at db entity-id attrib-name (current-layer-ts db)))
   ([db entity-id attrib-name ts]
    (:value (attribute-at db entity-id attrib-name ts))))
 
 (defn index-at
   ([db kind]
-   (index-at db kind (:curr-time db)))
+   (index-at db kind (current-layer-ts db)))
   ([^Database db kind ts]
    (kind ((:layers db) ts))))
 
@@ -129,7 +143,7 @@
 (defn evolution-of
   "Returns all changes for an attribute over time, from least to most recent. Eager."
   [db entity-id attrib-name]
-  (loop [res (transient []), ts (:curr-time db)]
+  (loop [res (transient []), ts (current-layer-ts db)]
     (if (= -1 ts)
       (rseq (persistent! res))
       (let [attr (attribute-at db entity-id attrib-name ts)]
@@ -140,7 +154,7 @@
   [db entity-id attrib-name]
   (iteration
     (fn [ts] (attribute-at db entity-id attrib-name ts))
-    :initk (:curr-time db)
+    :initk (current-layer-ts db)
     :kf (fn [attrib] (let [^long ts (:prev-ts attrib)]
                        (if (= ts -1) nil ts)))
     :vf (fn [attrib] [(:ts attrib) (:value attrib)])))
@@ -163,7 +177,7 @@
 (defn ^:private fix-new-entity
   [db entity]
   (let [new-entity?  (= :db/no-id-yet (:id entity))
-        ^long top-id (:top-id db)
+        ^long top-id (-> db :layers peek :top-id)
         increased-id (inc top-id)
         entity'      (if new-entity? (assoc entity :id (keyword (str increased-id))) entity)
         next-top-id  (if new-entity? increased-id top-id)]
@@ -202,13 +216,14 @@
 (defn add-entity
   [db entity]
   (let [[fixed-entity next-top-id] (fix-new-entity db entity)
-        layer-with-updated-storage (update (peek (:layers db)) :storage write-entity fixed-entity)
+        layer-with-updated-storage (-> (peek (:layers db))
+                                       (update :storage write-entity fixed-entity)
+                                       (assoc :top-id next-top-id))
         new-layer                  (reduce
                                      #(add-entity-to-index fixed-entity %1 %2)
                                      layer-with-updated-storage
                                      indexes)]
-    (-> (update db :layers conj new-layer)
-        (assoc :top-id next-top-id))))
+    (update db :layers conj new-layer)))
 
 (defn add-entities
   [db entities]
@@ -368,8 +383,7 @@
       (recur remaining-tx-fns (tx-fn transacted))
       (-> initial-db
           (update :layers conj (peek (:layers transacted)))
-          (assoc :curr-time (next-ts initial-db))
-          (assoc :top-id (:top-id transacted))))))
+          (assoc :curr-time (next-ts initial-db))))))
 
 (defmacro _transact
   [db op & txs]
