@@ -19,15 +19,13 @@
 (defrecord Attribute [name value ts prev-ts])
 
 (defn make-attribute
-  "The type of the attribute may be either :string, :number, :boolean or :db/ref . If the type is :db/ref, the value is an id of another entity."
-  [name value type
+  "If the value is a keyword of a number (e.g. ':123'), it is a reference/id of another entity."
+  [name value
    & {:keys [cardinality] :or {cardinality :db/single}}]
-  ;; TODO: check if type matches value, and accept the value as a set that contains the type even if it's of single cardinality
   {:pre [(keyword? name)
-         (contains? #{:string :number :boolean :db/ref} type)
          (contains? #{:db/single :db/multiple} cardinality)]}
   (with-meta (Attribute. name value -1 -1)
-    {:type type :cardinality cardinality}))
+    {:cardinality cardinality}))
 
 (defn add-attribute
   [entity attribute]
@@ -77,7 +75,12 @@
 
 (defn ref?
   [attribute]
-  (= :db/ref (:type (meta attribute))))
+  (let [value (:value attribute)]
+    (and (keyword? value)
+         (every? (fn [c]
+                   (let [i (int c)]
+                     (and (<= 48 i) (<= i 57))))
+           (name value)))))
 
 (defn make-db
   ([] (make-db (InMemoryStorage.)))
