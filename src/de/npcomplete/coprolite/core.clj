@@ -147,7 +147,7 @@
     (if (= -1 ts)
       (rseq (persistent! res))
       (let [attr (attribute-at db entity-id attrib-name ts)]
-        (recur (conj! res [(:ts attr) (:value attr)]), (:prev-ts attr))))))
+        (recur (conj! res [(:ts attr) (:value attr)]), (long (:prev-ts attr)))))))
 
 (defn evolution-trace
   "Returns an iteration (sequable/reducible) of the change history of an attribute, from most to least recent."

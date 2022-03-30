@@ -96,11 +96,35 @@
         cleaned-result-clauses (map #(mask-path-leaf-with-items relevant-items %) result-clauses)]
     (filter #(seq (peek %)) cleaned-result-clauses)))
 
+(defn ^:private combine-path-and-variables
+  [from-eav-fn [p1 p2 p3 :as path]]
+  (let [[var1 var2 var3] (apply from-eav-fn (:db/variable (meta path)))] ;; reorder the variables to match our path
+    ;; NOTE: when presenting an example output, the tutorial website seems to asume this ordering, which doesn't match the code... ?
+    #_(mapv vector
+        (repeat p1) (repeat var1)
+        (repeat p2) (repeat var2)
+        p3 (repeat var3))
+    (mapv vector
+      (repeat var1) (repeat p1)
+      (repeat var2) (repeat p2)
+      (repeat var3) p3)))
+
+(defn ^:private bind-variables-to-query
+  [q-result index]
+  (let [from-eav     (core/from-eav index)
+        to-eav       (core/to-eav index)
+        order-to-eav (fn [[v1 p1 v2 p2 v3 p3]]
+                       (to-eav [v1 p1] [v2 p2] [v3 p3]))]
+    (->> q-result
+         (eduction (comp (mapcat #(combine-path-and-variables from-eav %))
+                         (map order-to-eav)))
+         (reduce #(assoc-in %1 (pop %2) (peek %2)) {}))))
+
 (defn ^:private single-index-query-plan
   [query-pred-clauses index-kw db]
   (let [db-index (core/index-at db index-kw)
-        q-res (query-index db-index query-pred-clauses)]
-    (bind-variables-to-query q-res db-index)))
+        q-result (query-index db-index query-pred-clauses)]
+    (bind-variables-to-query q-result db-index)))
 
 (defn ^:private collapse-variable-vectors
   [accV v]
