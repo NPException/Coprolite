@@ -18,14 +18,18 @@
 
 (defrecord Attribute [name value ts prev-ts])
 
+(defn ^:private valid-attribute-value?
+  [value]
+  (or (not (coll? value))
+      (set? value)))
+
 (defn make-attribute
-  "If the value is a keyword of a number (e.g. ':123'), it is a reference/id of another entity."
-  [name value
-   & {:keys [cardinality] :or {cardinality :db/single}}]
+  "If the value is a keyword of a number (e.g. ':123'), it is a reference/id of another entity.
+  If the attribute should support a collection of values (have `multiple` cardinality), they must be passed as a set."
+  [name value]
   {:pre [(keyword? name)
-         (contains? #{:db/single :db/multiple} cardinality)]}
-  (with-meta (Attribute. name value -1 -1)
-    {:cardinality cardinality}))
+         (valid-attribute-value? value)]}
+  (Attribute. name value -1 -1))
 
 (defn add-attribute
   [entity attribute]
@@ -71,7 +75,7 @@
 
 (defn single?
   [attribute]
-  (= :db/single (:cardinality (meta attribute))))
+  (not (set? (:value attribute))))
 
 (defn ref?
   [attribute]
@@ -223,20 +227,23 @@
 (defn ^:private update-attribute-value
   [attribute value operation]
   (cond
-    (single? attribute)
-    (assoc attribute :value value)
-    ; now we're talking about an attribute of multiple values
     (= :db/reset-to operation)
-    (assoc attribute :value (setify value))
-    (= :db/add operation)
-    (assoc attribute :value (set/union (:value attribute) (setify value)))
+    (if (single? attribute)
+      (assoc attribute :value value)
+      (assoc attribute :value (setify value)))
     (= :db/remove operation)
-    (assoc attribute :value (set/difference (:value attribute) (setify value)))))
+    (if (single? attribute)
+      (assoc attribute :value nil)
+      (assoc attribute :value (set/difference (:value attribute) (setify value))))
+    (= :db/add operation)
+    (assoc attribute :value (set/union (:value attribute) (setify value)))))
 
 (defn ^:private update-attribute
   [attribute new-val new-ts operation]
-  {:pre [(if (single? attribute)
-           (contains? #{:db/reset-to :db/remove} operation)
+  {:pre [(or (some? new-val) (= operation :db/remove))
+         (valid-attribute-value? new-val)
+         (if (single? attribute)
+           (and (not (set? new-val)) (contains? #{:db/reset-to :db/remove} operation))
            (contains? #{:db/reset-to :db/add :db/remove} operation))]}
   (-> attribute
       (update-attribute-modification-time new-ts)
@@ -296,13 +303,17 @@
   ([db ent-id attribute-name new-val]
    (update-entity db ent-id attribute-name new-val :db/reset-to))
   ([db ent-id attribute-name new-val operation]
-   (let [update-ts           (next-ts db)
-         layer               (peek (:layers db))
-         entity              (-> layer :storage (get-entity ent-id))
-         attribute           ((:attributes entity) attribute-name)
-         updated-attribute   (update-attribute attribute new-val update-ts operation) ;; TODO: return `db` unchanged if attribute value didn't change
-         fully-updated-layer (update-layer layer ent-id attribute updated-attribute new-val operation)]
-     (update db :layers conj fully-updated-layer))))
+   (let [update-ts         (next-ts db)
+         layer             (peek (:layers db))
+         entity            (-> layer :storage (get-entity ent-id))
+         ;; TODO: make new attribute if it doesn't exist yet. Disambiguate the new attribute's cardinality by using different operation keywords for multi and single cardinality attributes.
+         attribute         ((:attributes entity) attribute-name)
+         updated-attribute (update-attribute attribute new-val update-ts operation)]
+     ;; return `db` unchanged if attribute value didn't change
+     (if (= (:value attribute) (:value updated-attribute))
+       db
+       (let [fully-updated-layer (update-layer layer ent-id attribute updated-attribute new-val operation)]
+         (update db :layers conj fully-updated-layer))))))
 
 
 (defn ^:private reffing-to
