@@ -406,3 +406,50 @@
 (defn -main
   [& _args]
   (println "Hello, World!"))
+
+
+(comment
+
+  (defn mapify [x]
+    (clojure.walk/postwalk
+      #(if (record? %) (into {} %) %)
+      x))
+
+  (mapify @db)
+
+  (do
+    (def db (make-db))
+
+    (def dirk (-> (make-entity)
+                  (add-attribute (make-attribute :first-name "Dirk"))
+                  (add-attribute (make-attribute :last-name "Wetzel"))
+                  (add-attribute (make-attribute :age 35))
+                  (add-attribute (make-attribute :hobbies #{"Games" "Movies"}))))
+
+    (transact db
+      (add-entity dirk))
+
+    (def calisto (-> (make-entity)
+                     (add-attribute (make-attribute :name "Calisto"))
+                     (add-attribute (make-attribute :breed "Siam-Mix"))
+                     (add-attribute (make-attribute :species "Cat"))
+                     (add-attribute (make-attribute :owner :1))))
+
+    (def lumah (-> (make-entity)
+                   (add-attribute (make-attribute :name "Lumah"))
+                   (add-attribute (make-attribute :breed "EKH"))
+                   (add-attribute (make-attribute :species "Cat"))
+                   (add-attribute (make-attribute :owner :1))))
+
+    (transact db
+      (add-entity calisto)
+      (add-entity lumah))
+
+    (transact db
+      (update-entity :1 :age 36)
+      (update-entity :1 :hobbies #{"VR"} :db/add))
+
+    nil)
+
+  ;
+  )

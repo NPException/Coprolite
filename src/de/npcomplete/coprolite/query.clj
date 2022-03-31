@@ -76,13 +76,16 @@
     (with-meta [k1 k2 res] (meta pred-clause))))
 
 (defn ^:private items-that-answer-all-conditions
-  [items-seq ^long num-of-conditions]
-  (->> items-seq                                            ; take the sets of items
+  [index result-clauses ^long num-of-conditions]
+  ;; debug eval: (mapv (juxt identity (comp :db/variable meta)) (doall result-clauses))
+  ;; TODO: remove `duplicate` results (where the path to the result item is the same if part of the path is a variable)
+  ;;       could try to replace the path parts with the variables and then throw the modified result-clauses in a set first
+  (->> (map peek result-clauses)                            ; take the sets of result items
        (reduce into [])                                     ; reduce all the sets into one vector
        (frequencies)                                        ; count for each item in how many sets it was in
        (into #{}
          (keep (fn [[item ^long n]]
-                 (when (<= num-of-conditions n)             ; items that answered all conditions
+                 (when (>= n num-of-conditions)             ; items that answered all conditions
                    item))))))
 
 (defn ^:private mask-path-leaf-with-items
@@ -92,18 +95,13 @@
 (defn ^:private query-index
   [index pred-clauses]
   (let [result-clauses         (filter-index index pred-clauses)
-        relevant-items         (items-that-answer-all-conditions (map peek result-clauses) (count pred-clauses))
+        relevant-items         (items-that-answer-all-conditions index result-clauses (count pred-clauses))
         cleaned-result-clauses (map #(mask-path-leaf-with-items relevant-items %) result-clauses)]
     (filter #(seq (peek %)) cleaned-result-clauses)))
 
 (defn ^:private combine-path-and-variables
   [from-eav-fn [p1 p2 p3 :as path]]
   (let [[var1 var2 var3] (apply from-eav-fn (:db/variable (meta path)))] ;; reorder the variables to match our path
-    ;; NOTE: when presenting an example output, the tutorial website seems to asume this ordering, which doesn't match the code... ?
-    #_(mapv vector
-        (repeat p1) (repeat var1)
-        (repeat p2) (repeat var2)
-        p3 (repeat var3))
     (mapv vector
       (repeat var1) (repeat p1)
       (repeat var2) (repeat p2)
@@ -143,3 +141,52 @@
   (let [join-index  (index-of-joining-variable query-pred-clauses)
         db-index-kw (case join-index 0 :AVET 1 :VEAT 2 :EAVT)]
     #(single-index-query-plan query-pred-clauses db-index-kw %)))
+
+(defn ^:private resultify-bind-pair
+  [needed-vars accum [var _ :as pair]]
+  (if (contains? needed-vars var)
+    (conj accum pair)
+    accum))
+
+(defn resultify-av-pair
+  [needed-vars accum-res av-pair]
+  (reduce #(resultify-bind-pair needed-vars %1 %2) accum-res av-pair))
+
+(defn ^:private locate-vars-in-query-res
+  [needed-vars [entity-pair av-map :as _query-result]]
+  (let [entity-result (resultify-bind-pair needed-vars [] entity-pair)]
+    (mapv #(resultify-av-pair needed-vars entity-result %) av-map)))
+
+(defn unify
+  [binded-res-col needed-vars]
+  (mapv #(locate-vars-in-query-res needed-vars %) binded-res-col))
+
+
+(comment
+
+  (def plan (build-query-plan (q-clauses-to-pred-clauses [[?e :species "Cat"]
+                                                          [?e :breed ?breed]])))
+
+  (def plan (build-query-plan (q-clauses-to-pred-clauses [[?e :species "Cat"]
+                                                          [?e ?what "EKH"]
+                                                          [?e :breed ?breed]])))
+
+  ;; FIXME: This should only return cats, but somehow returns all entities because of the second clause.
+  ;;        The bug is probably in `items-that-answer-all-conditions`
+  (def plan (build-query-plan (q-clauses-to-pred-clauses [[?e :species "Cat"]
+                                                          [?e ?what ?any]
+                                                          [?e :breed ?breed]])))
+
+  ;; FIXME: This one should return nothing, but returns entity :1 (Dirk).
+  ;;        The reason is that `items-that-answer-all-conditions` receives 3 result items
+  ;;        for entity :1, one for each value in the :hobies attribute. Because of that it is
+  ;;        counted 3 times by `frequencies`, and hence often enough to be assumed "matches all clauses".
+  ;;        I could try to somehow
+  (def plan (build-query-plan (q-clauses-to-pred-clauses [[?e :species "Cat"]
+                                                          [?e :hobbies ?any]])))
+
+  (plan @core/db)
+
+  (unify (plan @core/db) '#{?e ?breed ?what ?any})
+  ;
+  )
